@@ -8,63 +8,86 @@
 ## Features
 
 - 🔍 **Pattern Detection**: Identifies common allocation patterns that could benefit from stack allocation
-- 🤖 **AI-Powered Suggestions**: Optional integration with OpenAI for enhanced code suggestions
+- 🤖 **AI-Powered Suggestions**: Optional integration with OpenAI for enhanced code suggestions with actual code fixes
 - 📊 **Metrics & Telemetry**: Prometheus metrics support for monitoring analysis performance
 - 🔧 **Configurable**: Extensive configuration options for different use cases
 - 🚀 **Fast**: Efficient AST-based analysis with minimal overhead
 - 🔌 **Extensible**: Plugin architecture for custom detectors
 
-## Installation
+## Quick Start
 
-### Using go install
-
-```bash
-go install github.com/harriteja/gostackallocator/cmd@latest
-```
-
-### Building from source
+### Installation
 
 ```bash
+# Option 1: Install from source
 git clone https://github.com/harriteja/gostackallocator.git
 cd gostackallocator
 go build -o stackalloc ./cmd
-```
 
-## Usage
+# Option 2: Using go install (when published)
+go install github.com/harriteja/gostackallocator/cmd@latest
+```
 
 ### Basic Usage
 
-Run as a standalone analyzer:
-
 ```bash
-stackalloc ./...
-```
-
-### Integration with go vet
-
-```bash
+# Analyze entire project
 go vet -vettool=stackalloc ./...
+
+# Analyze specific package
+go vet -vettool=stackalloc ./internal/handlers/...
+
+# Analyze single file
+go vet -vettool=stackalloc ./main.go
+
+# With custom threshold (stricter for performance-critical code)
+go vet -vettool=stackalloc -stackalloc.max-alloc-size=16 ./...
 ```
 
-### With Configuration
+### AI-Powered Analysis
 
 ```bash
-stackalloc -stackalloc.max-alloc-size=64 -stackalloc.metrics-enabled ./...
-```
-
-### With AI Suggestions
-
-```bash
+# Set up OpenAI API key
 export OPENAI_API_KEY="your-api-key"
-stackalloc -openai-model=gpt-4 ./...
+
+# Basic AI analysis
+STACKALLOC_USE_DI=true go vet -vettool=stackalloc ./...
+
+# AI with automatic code fixes (experimental)
+STACKALLOC_USE_DI=true go vet -vettool=stackalloc -stackalloc.autofix ./...
 ```
 
-### With AI Suggestions and Automatic Fixes
+### Helper Scripts
 
 ```bash
-export OPENAI_API_KEY="your-api-key"
-STACKALLOC_USE_DI=true go vet -vettool=./stackalloc -autofix ./...
+# Use automated analysis script
+./scripts/analyze-project.sh -b ./stackalloc --ai --autofix
+
+# Quick setup for your project
+./scripts/quick-setup.sh --setup-ide --setup-ci
 ```
+
+## What It Detects
+
+### Example Output
+
+```
+examples/sample.go:13:6: new(T) always allocates on heap; consider using stack allocation if object doesn't escape
+    AI suggested fix:
+    - s := new(string)
+    + return "hello"  // Direct value return
+
+examples/sample.go:15:6: pointer to x escapes only once; consider using stack allocation
+    AI suggested fix:
+    - return &x
+    + return x  // Return by value instead of pointer
+```
+
+## Documentation
+
+- **[USAGE.md](USAGE.md)**: Comprehensive usage guide with real-world examples, CI/CD integration, and advanced configuration
+- **[Examples](examples/)**: Sample code demonstrating detected patterns
+- **[Scripts](scripts/)**: Helper scripts for automated analysis and project setup
 
 ## Configuration Options
 
@@ -134,113 +157,50 @@ func reused() {
 
 ## Architecture
 
-```
-┌─────────────┐        ┌──────────────┐        ┌──────────────┐
-│  CLI / Vet  │ ──>    │ Analyzer Core│ ──>    │ Report Engine│ ──> Output
-└─────────────┘        └──────────────┘        └──────────────┘
-        │                     │                       │
-        │                     │                       │
-        ▼                     ▼                       ▼
-  Parse command       Walk AST & type info    Format diagnostics
-        │                     │                       │
-        └───────────>─────────┴─────────>─────────────┘
-```
-
-### Package Structure
+`stackalloc` follows a clean 3-layer architecture:
 
 ```
-stackalloc/
-├── analyzer/          # Core analysis logic
-│   ├── analyzer.go    # Main analyzer definition
-│   ├── inspector.go   # AST inspection & pattern matching
-│   ├── reporter.go    # Suggestion formatting
-│   ├── types.go       # Data models
-│   └── config.go      # Configuration handling
-├── adapter/           # External service adapters
-│   ├── openai_adapter.go    # OpenAI integration
-│   └── metrics_adapter.go   # Prometheus metrics
-├── cmd/               # CLI entry point
-│   └── main.go
-├── internal/          # Internal utilities
-│   ├── utils.go       # Common utilities
-│   └── metrics.go     # Telemetry definitions
-└── examples/          # Sample code
-    └── sample.go
+┌─────────────┐    ┌──────────────┐    ┌──────────────┐
+│  CLI / Vet  │ -> │ Analyzer Core│ -> │ Report Engine│ -> Output
+└─────────────┘    └──────────────┘    └──────────────┘
 ```
+
+**Key Components:**
+- **Analyzer Core**: AST inspection and pattern detection
+- **AI Integration**: OpenAI adapter for enhanced suggestions
+- **Metrics**: Prometheus integration for monitoring
+- **Extensible**: Plugin architecture for custom detectors
 
 ## AI Integration
 
-The analyzer can integrate with OpenAI's API to provide enhanced code suggestions:
+`stackalloc` integrates with OpenAI to provide **concrete code fixes**, not just enhanced problem descriptions.
 
-1. **Setup**: Provide your OpenAI API key via environment variable or flag
-2. **Analysis**: The analyzer extracts code snippets around detected issues
-3. **Enhancement**: OpenAI generates context-aware suggestions
-4. **Output**: Suggestions are included in the analysis diagnostics
+### How It Works
+
+1. **Issue Detection**: Detects memory allocation issues using static analysis
+2. **Context Extraction**: Extracts code snippet around the problematic line  
+3. **AI Analysis**: Sends code and issue to OpenAI requesting specific fixes
+4. **Code Generation**: Returns actual replacement code with before/after examples
+5. **Smart Application**: Generates `analysis.SuggestedFix` objects for IDE integration
 
 ### Automatic Code Fixes
 
-When the `-autofix` flag is enabled along with AI integration, the analyzer provides concrete code fixes:
+When `-stackalloc.autofix` is enabled, the analyzer provides concrete code fixes:
 
-1. **AI Analysis**: OpenAI analyzes the problematic code and suggests specific improvements
-2. **Code Generation**: The analyzer generates actual replacement code based on AI suggestions
-3. **Smart Replacement**: Creates `analysis.SuggestedFix` with precise code changes
-4. **Validation**: Validates suggested code syntax before proposing fixes
+**⚠️ Important**: Automatic fixes are experimental. Always review changes before applying.
 
-**⚠️ Important**: Automatic fixes are experimental. Always review changes before applying them to production code.
-
-Example output with automatic fixes:
-
-```
-example.go:10:2: new(T) always allocates on heap; consider using stack allocation if object doesn't escape
-    Suggested fix: Replace new(T) with stack allocation
-    - s := new(string)
-    + var s string; return &s
-
-example.go:15:6: pointer to x escapes only once; consider using stack allocation  
-    Suggested fix: Return value instead of pointer
-    - return &x
-    + return x
-```
-
-### AI Suggestion Examples
-
-Example output with AI suggestions and automatic fixes:
-
-```
-example.go:10:2: new(T) always allocates on heap; consider using stack allocation if object doesn't escape
-    AI suggested fix:
-    - s := new(string)
-    + var s string; ptr := &s
-
-example.go:15:6: pointer to x escapes only once; consider using stack allocation
-    AI suggested fix:
-    - return &x
-    + return x  // Return by value instead of pointer
-```
-
-**Before (problematic code):**
+**Example:**
 ```go
+// Before (problematic)
 func createString() *string {
     s := new(string)  // Heap allocation
     *s = "hello"
     return s
 }
 
-func getValue() *int {
-    x := 42
-    return &x  // Pointer escape
-}
-```
-
-**After (AI-suggested fixes):**
-```go
+// After (AI-suggested fix)
 func createString() string {
     return "hello"  // Direct value return
-}
-
-func getValue() int {
-    x := 42
-    return x  // Value return, no escape
 }
 ```
 

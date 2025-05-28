@@ -1,11 +1,11 @@
 # stackalloc Usage Guide
 
-This guide explains how to use `stackalloc` to analyze and optimize memory allocation patterns in your Go projects.
+This guide provides comprehensive usage instructions for `stackalloc` in different scenarios.
+
+> **Quick Start**: See [README.md](README.md) for basic installation and usage.
 
 ## Table of Contents
 
-- [Installation](#installation)
-- [Basic Usage](#basic-usage)
 - [Project-Level Analysis](#project-level-analysis)
 - [Folder-Level Analysis](#folder-level-analysis)
 - [File-Level Analysis](#file-level-analysis)
@@ -13,39 +13,10 @@ This guide explains how to use `stackalloc` to analyze and optimize memory alloc
 - [AI-Powered Analysis](#ai-powered-analysis)
 - [Continuous Integration](#continuous-integration)
 - [IDE Integration](#ide-integration)
+- [Real-World Examples](#real-world-examples)
+- [Automation Scripts](#automation-scripts)
 - [Troubleshooting](#troubleshooting)
-
-## Installation
-
-### Option 1: Install from Source
-```bash
-git clone https://github.com/harriteja/gostackallocator.git
-cd gostackallocator
-go build -o stackalloc ./cmd
-sudo mv stackalloc /usr/local/bin/  # Optional: add to PATH
-```
-
-### Option 2: Go Install (when published)
-```bash
-go install github.com/harriteja/gostackallocator/cmd@latest
-```
-
-### Option 3: Download Binary
-Download the latest release from GitHub releases and add to your PATH.
-
-## Basic Usage
-
-### Quick Start
-```bash
-# Analyze current directory and subdirectories
-go vet -vettool=stackalloc ./...
-
-# Analyze specific package
-go vet -vettool=stackalloc ./pkg/mypackage
-
-# Analyze single file
-go vet -vettool=stackalloc ./main.go
-```
+- [Best Practices](#best-practices)
 
 ## Project-Level Analysis
 
@@ -398,7 +369,7 @@ Create `.vscode/tasks.json`:
    - **Arguments**: `vet -vettool=stackalloc $FileDir$`
    - **Working Directory**: `$ProjectFileDir$`
 
-## Practical Examples
+## Real-World Examples
 
 ### Example 1: E-commerce Monolith
 

@@ -27,8 +27,16 @@ func newUsageTracker() *usageTracker {
 func InspectFile(f *ast.File, info *types.Info, fset *token.FileSet, report func(pos token.Pos, msg string)) {
 	tracker := newUsageTracker()
 
-	// First pass: collect allocation sites and usage counts
+	// Create pattern detector with config (we'll need to add config parameter later)
+	config := &Config{} // Default config for now
+	detector := NewPatternDetector(info, fset, config, tracker)
+
+	// First pass: collect allocation sites and usage counts using enhanced pattern detection
 	ast.Inspect(f, func(n ast.Node) bool {
+		// Use the new pattern detector for comprehensive analysis
+		detector.DetectPattern(n, report)
+
+		// Keep existing logic for compatibility
 		switch expr := n.(type) {
 		case *ast.UnaryExpr:
 			if expr.Op == token.AND {
@@ -40,13 +48,8 @@ func InspectFile(f *ast.File, info *types.Info, fset *token.FileSet, report func
 				}
 			}
 		case *ast.CallExpr:
-			// Detect new(T) calls
-			if isNewCall(expr, info) {
-				// For new() calls, we create a synthetic object to track
-				pos := expr.Pos()
-				report(pos, "new(T) always allocates on heap; consider using stack allocation if object doesn't escape")
-			}
-			// Count usage of tracked objects in function calls
+			// Enhanced new() call detection is now handled by PatternDetector
+			// Keep usage counting for tracked objects
 			for _, arg := range expr.Args {
 				if ident, ok := arg.(*ast.Ident); ok {
 					if obj := info.ObjectOf(ident); obj != nil {

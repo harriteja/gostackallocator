@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 
+	"go/ast"
+
 	"golang.org/x/tools/go/analysis"
 )
 
@@ -253,4 +255,222 @@ func (af *AutoFixer) SmartReplace(issue Issue, oldPattern, newCode string) *anal
 			},
 		},
 	}
+}
+
+// generateMakeFix generates a fix for make() calls that can be optimized
+func (af *AutoFixer) generateMakeFix(call *ast.CallExpr, suggestion string) *analysis.TextEdit {
+	return &analysis.TextEdit{
+		Pos:     call.Pos(),
+		End:     call.End(),
+		NewText: []byte(suggestion),
+	}
+}
+
+// generateSliceLiteralFix generates a fix for slice literals that can use arrays
+func (af *AutoFixer) generateSliceLiteralFix(lit *ast.CompositeLit, suggestion string) *analysis.TextEdit {
+	return &analysis.TextEdit{
+		Pos:     lit.Pos(),
+		End:     lit.End(),
+		NewText: []byte(suggestion),
+	}
+}
+
+// generateStringConcatFix generates a fix for string concatenation
+func (af *AutoFixer) generateStringConcatFix(expr *ast.BinaryExpr, suggestion string) *analysis.TextEdit {
+	return &analysis.TextEdit{
+		Pos:     expr.Pos(),
+		End:     expr.End(),
+		NewText: []byte(suggestion),
+	}
+}
+
+// generateAppendFix generates a fix for append calls that can be optimized
+func (af *AutoFixer) generateAppendFix(call *ast.CallExpr, suggestion string) *analysis.TextEdit {
+	return &analysis.TextEdit{
+		Pos:     call.Pos(),
+		End:     call.End(),
+		NewText: []byte(suggestion),
+	}
+}
+
+// GenerateFixForPattern generates appropriate fixes for different allocation patterns
+func (af *AutoFixer) GenerateFixForPattern(node ast.Node, pattern AllocationPattern, message string) *analysis.TextEdit {
+	switch pattern {
+	case PatternNewCall:
+		if call, ok := node.(*ast.CallExpr); ok {
+			return af.generateNewCallFix(call, message)
+		}
+	case PatternMakeSlice:
+		if call, ok := node.(*ast.CallExpr); ok {
+			return af.generateMakeSliceFix(call, message)
+		}
+	case PatternMakeMap:
+		if call, ok := node.(*ast.CallExpr); ok {
+			return af.generateMakeMapFix(call, message)
+		}
+	case PatternSliceLiteral:
+		if lit, ok := node.(*ast.CompositeLit); ok {
+			return af.generateSliceToArrayFix(lit, message)
+		}
+	case PatternStringConcat:
+		if expr, ok := node.(*ast.BinaryExpr); ok {
+			return af.generateStringBuilderFix(expr, message)
+		}
+	case PatternAppendGrowth:
+		if call, ok := node.(*ast.CallExpr); ok {
+			return af.generatePreallocatedAppendFix(call, message)
+		}
+	}
+	return nil
+}
+
+// generateNewCallFix handles new(T) -> zero value fixes
+func (af *AutoFixer) generateNewCallFix(call *ast.CallExpr, message string) *analysis.TextEdit {
+	if len(call.Args) != 1 {
+		return nil
+	}
+
+	// Extract type from new(T) call
+	typeExpr := call.Args[0]
+	var typeStr string
+
+	switch t := typeExpr.(type) {
+	case *ast.Ident:
+		typeStr = t.Name
+	case *ast.SelectorExpr:
+		if pkg, ok := t.X.(*ast.Ident); ok {
+			typeStr = pkg.Name + "." + t.Sel.Name
+		} else {
+			typeStr = t.Sel.Name
+		}
+	default:
+		return nil
+	}
+
+	// Generate the replacement value
+	var replacement string
+	switch typeStr {
+	case "string":
+		replacement = `""`
+	case "int":
+		replacement = "0"
+	case "bool":
+		replacement = "false"
+	case "float64":
+		replacement = "0.0"
+	default:
+		// For other types, we can't easily provide a zero value without more context
+		return nil
+	}
+
+	return &analysis.TextEdit{
+		Pos:     call.Pos(),
+		End:     call.End(),
+		NewText: []byte(replacement),
+	}
+}
+
+// generateMakeSliceFix handles make([]T, size) optimizations
+func (af *AutoFixer) generateMakeSliceFix(call *ast.CallExpr, message string) *analysis.TextEdit {
+	if len(call.Args) < 2 {
+		return nil
+	}
+
+	// For small constant sizes, suggest array
+	if lit, ok := call.Args[1].(*ast.BasicLit); ok && lit.Kind == token.INT {
+		if len(lit.Value) <= 2 { // Small size
+			// Extract type from make([]T, size)
+			if sliceType, ok := call.Args[0].(*ast.ArrayType); ok && sliceType.Len == nil {
+				typeStr := af.getTypeString(sliceType.Elt)
+				suggestion := fmt.Sprintf("[%s]%s{}", lit.Value, typeStr)
+				return af.generateMakeFix(call, suggestion)
+			}
+		}
+	}
+
+	return nil
+}
+
+// generateMakeMapFix handles make(map[K]V) optimizations
+func (af *AutoFixer) generateMakeMapFix(call *ast.CallExpr, message string) *analysis.TextEdit {
+	// For maps without size hint, suggest adding capacity
+	if len(call.Args) == 1 {
+		suggestion := af.getOriginalText(call) + " // Consider: make(map[K]V, expectedSize)"
+		return af.generateMakeFix(call, suggestion)
+	}
+	return nil
+}
+
+// generateSliceToArrayFix converts small slice literals to arrays
+func (af *AutoFixer) generateSliceToArrayFix(lit *ast.CompositeLit, message string) *analysis.TextEdit {
+	if len(lit.Elts) <= 4 && len(lit.Elts) > 0 {
+		// Convert []T{...} to [N]T{...}
+		originalText := af.getOriginalText(lit)
+		if strings.HasPrefix(originalText, "[]") {
+			suggestion := fmt.Sprintf("[%d]%s", len(lit.Elts), originalText[2:])
+			return af.generateSliceLiteralFix(lit, suggestion)
+		}
+	}
+	return nil
+}
+
+// generateStringBuilderFix converts string concatenation to strings.Builder
+func (af *AutoFixer) generateStringBuilderFix(expr *ast.BinaryExpr, message string) *analysis.TextEdit {
+	// Simple fix: add comment suggesting strings.Builder
+	suggestion := "/* Consider: use strings.Builder for multiple concatenations */"
+
+	return af.generateStringConcatFix(expr, suggestion)
+}
+
+// generatePreallocatedAppendFix suggests pre-allocation for append calls
+func (af *AutoFixer) generatePreallocatedAppendFix(call *ast.CallExpr, message string) *analysis.TextEdit {
+	if len(call.Args) >= 2 {
+		// Check if appending to nil slice
+		if ident, ok := call.Args[0].(*ast.Ident); ok && ident.Name == "nil" {
+			// Suggest make() instead of append to nil
+			suggestion := "make([]T, 0, capacity) // Pre-allocate instead of append to nil"
+			return af.generateAppendFix(call, suggestion)
+		}
+	}
+	return nil
+}
+
+// getTypeString extracts type string from AST node
+func (af *AutoFixer) getTypeString(expr ast.Expr) string {
+	switch t := expr.(type) {
+	case *ast.Ident:
+		return t.Name
+	case *ast.SelectorExpr:
+		if pkg, ok := t.X.(*ast.Ident); ok {
+			return pkg.Name + "." + t.Sel.Name
+		}
+		return t.Sel.Name
+	case *ast.StarExpr:
+		return "*" + af.getTypeString(t.X)
+	case *ast.ArrayType:
+		if t.Len == nil {
+			return "[]" + af.getTypeString(t.Elt)
+		}
+		return "[" + af.getOriginalText(t.Len) + "]" + af.getTypeString(t.Elt)
+	case *ast.MapType:
+		return "map[" + af.getTypeString(t.Key) + "]" + af.getTypeString(t.Value)
+	case *ast.ChanType:
+		return "chan " + af.getTypeString(t.Value)
+	default:
+		return "interface{}"
+	}
+}
+
+// getOriginalText extracts the original text of an AST node
+func (af *AutoFixer) getOriginalText(node ast.Node) string {
+	start := af.fset.Position(node.Pos())
+	end := af.fset.Position(node.End())
+
+	if start.Filename != end.Filename {
+		return ""
+	}
+
+	// For now, return a placeholder since we don't have access to the content
+	// This method would need to be enhanced to work with file content
+	return "/* original text */"
 }

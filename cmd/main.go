@@ -5,6 +5,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/harriteja/gostackallocator/adapter"
 	"github.com/harriteja/gostackallocator/analyzer"
@@ -56,9 +57,40 @@ func buildContainer() *dig.Container {
 	container.Provide(func() *analyzer.Config {
 		config := analyzer.DefaultConfig()
 
+		// Set the API key from environment if available
+		if apiKey := os.Getenv("OPENAI_API_KEY"); apiKey != "" {
+			config.OpenAIAPIKey = apiKey
+		}
+
+		// Set default model to gpt-4o-mini
+		config.OpenAIModel = "gpt-4o-mini"
+
 		// Parse command line flags
-		fs := flag.NewFlagSet("stackalloc", flag.ExitOnError)
+		fs := flag.NewFlagSet("stackalloc", flag.ContinueOnError)
 		config.SetupFlags(fs)
+
+		// Parse the arguments (skip program name)
+		args := os.Args[1:]
+		// Filter out go vet specific args
+		var stackallocArgs []string
+		for i, arg := range args {
+			if strings.HasPrefix(arg, "-openai-") ||
+				strings.HasPrefix(arg, "-autofix") ||
+				strings.HasPrefix(arg, "-metrics-") ||
+				strings.HasPrefix(arg, "-max-alloc-") ||
+				strings.HasPrefix(arg, "-disable-") {
+				stackallocArgs = append(stackallocArgs, arg)
+				// Check if next arg is a value (not starting with -)
+				if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+					stackallocArgs = append(stackallocArgs, args[i+1])
+				}
+			}
+		}
+
+		if len(stackallocArgs) > 0 {
+			fs.Parse(stackallocArgs)
+			config.ParseFlags(fs)
+		}
 
 		return config
 	})

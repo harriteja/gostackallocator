@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/harriteja/gostackallocator/adapter"
+	"go.uber.org/zap"
 	"golang.org/x/tools/go/analysis"
 )
 
@@ -57,6 +59,7 @@ func NewAnalyzer(aiClient AIClient, metricsClient MetricsClient, config *Config)
 		Run: func(pass *analysis.Pass) (interface{}, error) {
 			return runWithDeps(pass, aiClient, metricsClient, config)
 		},
+		Flags: flag.FlagSet{},
 	}
 
 	// Setup flags if config is provided
@@ -90,8 +93,17 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		// Use mock AI client for testing when no real API key is provided
 		if config.OpenAIAPIKey == "" {
 			aiClient = &MockAIClient{}
+		} else {
+			// Create real OpenAI client when API key is provided
+			logger := zap.NewNop() // Use no-op logger in non-DI mode
+			aiClient = adapter.NewOpenAIAdapter(
+				config.OpenAIAPIKey,
+				config.OpenAIModel,
+				config.OpenAIMaxTokens,
+				config.OpenAITemperature,
+				logger,
+			)
 		}
-		// Real AI client would be created here if API key is provided
 	}
 
 	// Create fix tracker for automatic fixes

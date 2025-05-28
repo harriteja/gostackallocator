@@ -1,273 +1,256 @@
-# stackalloc - Go Static Analysis for Stack Allocation Optimization
+# Go Stack Allocator Analyzer
 
-[![Go Version](https://img.shields.io/badge/go-1.20+-blue.svg)](https://golang.org/dl/)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-
-`stackalloc` is a Go static analysis tool that detects small heap allocations and suggests stack-friendly alternatives. It helps optimize memory allocation patterns by identifying cases where stack allocation could be used instead of heap allocation.
+A static analysis tool for Go that detects heap allocations and suggests stack allocation optimizations with AI-powered autofix capabilities.
 
 ## Features
 
-- 🔍 **Pattern Detection**: Identifies common allocation patterns that could benefit from stack allocation
-- 🤖 **AI-Powered Suggestions**: Optional integration with OpenAI for enhanced code suggestions with actual code fixes
-- 📊 **Metrics & Telemetry**: Prometheus metrics support for monitoring analysis performance
-- 🔧 **Configurable**: Extensive configuration options for different use cases
-- 🚀 **Fast**: Efficient AST-based analysis with minimal overhead
-- 🔌 **Extensible**: Plugin architecture for custom detectors
+### Comprehensive Allocation Pattern Detection
 
-## 🚀 Quick Start
+The analyzer detects 13+ different types of allocation patterns:
 
-### Installation
+#### 1. **new(T) Calls**
+```go
+// Detected
+s := new(string)
+i := new(int)
 
-```bash
-# Clone the repository
-git clone https://github.com/harriteja/gostackallocator.git
-cd gostackallocator
-
-# Build the analyzer
-go build -o stackalloc ./cmd/main.go
+// Suggested Fix
+var s string    // or s := ""
+var i int       // or i := 0
 ```
 
-### Basic Usage
+#### 2. **make() Patterns**
+```go
+// Small slice allocations
+smallSlice := make([]int, 5)  // → Consider using [5]int{} array
 
+// Large slice allocations  
+largeSlice := make([]int, 10000)  // → May cause GC pressure
+
+// Maps without size hints
+m := make(map[string]int)  // → Consider make(map[string]int, expectedSize)
+```
+
+#### 3. **Slice Literals**
+```go
+// Small slice literals
+numbers := []int{1, 2, 3, 4}  // → Consider [4]int{1, 2, 3, 4}
+
+// Complex nested slices
+nested := [][]int{{1, 2}, {3, 4}}  // → Multiple allocations detected
+```
+
+#### 4. **Map Literals**
+```go
+// Small maps
+config := map[string]int{"a": 1, "b": 2}  // → Consider struct or switch
+```
+
+#### 5. **String Concatenation**
+```go
+// Multiple concatenations
+result := "Hello " + name + "!"  // → Consider strings.Builder
+```
+
+#### 6. **append() Patterns**
+```go
+// Append to nil
+var slice []int
+slice = append(slice, 1, 2, 3)  // → Pre-allocate with make()
+
+// Append in loops
+for i := 0; i < 100; i++ {
+    slice = append(slice, i)  // → Pre-allocate capacity
+}
+```
+
+#### 7. **String Formatting**
+```go
+// Simple formatting
+s := fmt.Sprintf("Number: %d", 42)  // → Consider direct conversion
+converted := strconv.Itoa(123)      // → Consider strconv.AppendInt
+```
+
+#### 8. **Reflection Allocations**
+```go
+// Reflection-based allocations
+val := reflect.New(typ)                    // → Always heap allocated
+slice := reflect.MakeSlice(sliceType, 10, 10)  // → Consider alternatives
+```
+
+#### 9. **Interface Boxing**
+```go
+// Value boxing
+var iface interface{} = 42  // → Value boxed to interface{}
+```
+
+#### 10. **Type Assertions**
+```go
+// Interface to concrete
+if val, ok := iface.(int); ok {  // → May cause allocation if boxed
+    // ...
+}
+```
+
+#### 11. **Closure Captures**
+```go
+// Variable capture
+counter := 0
+fn := func() { counter++ }  // → Captures variable, may allocate
+```
+
+#### 12. **Large Struct Literals**
+```go
+// Large structs
+large := LargeStruct{
+    Field1: "a", Field2: "b", /* ... 10+ fields */
+}  // → Consider using pointer or smaller structs
+```
+
+#### 13. **Channel Patterns**
+```go
+// Unbuffered channels
+ch := make(chan int)     // → Consider if synchronous needed
+ch2 := make(chan int, 1) // → Small buffer detected
+```
+
+## Installation
+
+```bash
+go install github.com/harriteja/gostackallocator/cmd@latest
+```
+
+## Usage
+
+### Basic Analysis
 ```bash
 # Analyze a single file
-go vet -vettool=./stackalloc ./examples/sample.go
+go vet -vettool=stackalloc main.go
 
-# Analyze entire project
-go vet -vettool=./stackalloc ./...
+# Analyze a package
+go vet -vettool=stackalloc ./...
 
-# Enable automatic code fixes (⚠️ modifies source files)
-go vet -vettool=./stackalloc -stackalloc.autofix=true ./examples/
-
-# Customize detection threshold
-go vet -vettool=./stackalloc -stackalloc.max-alloc-size=64 ./...
+# Analyze with detailed output
+go vet -vettool=stackalloc -stackalloc.verbose=true ./...
 ```
 
-### 🔧 Automatic Code Fixes
+### AI-Powered Autofix
+```bash
+# Enable automatic code fixes
+go vet -vettool=stackalloc -stackalloc.autofix=true main.go
 
-The `stackalloc` analyzer can automatically apply AI-suggested fixes to your code:
+# Generate reports with suggestions
+go vet -vettool=stackalloc -stackalloc.report=true ./...
+```
 
-**Before:**
+### Configuration Options
+
+- `-stackalloc.autofix=true`: Enable automatic code fixes
+- `-stackalloc.report=true`: Generate detailed reports
+- `-stackalloc.verbose=true`: Enable verbose output
+- `-stackalloc.ai-key=<key>`: OpenAI API key for enhanced suggestions
+
+## Example Output
+
+```bash
+$ go vet -vettool=stackalloc examples/demo.go
+
+examples/demo.go:10:6: new(T) always allocates on heap; consider using stack allocation if object doesn't escape
+examples/demo.go:15:12: small slice literal; consider using array for stack allocation  
+examples/demo.go:20:15: small slice allocation with make(); consider using array or stack allocation
+examples/demo.go:25:13: string concatenation with + operator allocates; consider using strings.Builder
+examples/demo.go:30:12: appending to nil slice causes allocation; consider pre-allocating with make()
+examples/demo.go:35:14: simple string formatting; consider using string concatenation or strings.Builder
+examples/demo.go:40:17: reflection-based allocation always uses heap; consider avoiding if performance critical
+```
+
+## Autofix Examples
+
+### Before Autofix:
 ```go
 func example() {
     s := new(string)
-    *s = "hello"
-    
-    i := new(int)
-    *i = 42
+    numbers := []int{1, 2, 3}
+    result := "Hello " + "World"
 }
 ```
 
-**After (with `-stackalloc.autofix=true`):**
+### After Autofix:
 ```go
 func example() {
     s := ""
-    *s = "hello"  // Manual cleanup needed
-    
-    i := 0
-    *i = 42       // Manual cleanup needed
+    numbers := [3]int{1, 2, 3}
+    result := "Hello World"  // or use strings.Builder for multiple concatenations
 }
 ```
 
-**⚠️ Important:** Autofix modifies source files directly. Always commit your changes before running with `-autofix=true`.
+## Performance Impact
 
-## What It Detects
+The analyzer helps identify allocations that can impact performance:
 
-### Example Output
+- **Heap vs Stack**: Stack allocations are ~10x faster than heap
+- **GC Pressure**: Fewer heap allocations = less garbage collection overhead  
+- **Memory Efficiency**: Arrays use less memory than slices for fixed-size data
+- **String Operations**: strings.Builder is much faster for multiple concatenations
 
-```
-examples/sample.go:13:6: new(T) always allocates on heap; consider using stack allocation if object doesn't escape
-    AI suggested fix:
-    - s := new(string)
-    + return "hello"  // Direct value return
+## Integration
 
-examples/sample.go:15:6: pointer to x escapes only once; consider using stack allocation
-    AI suggested fix:
-    - return &x
-    + return x  // Return by value instead of pointer
-```
-
-## Documentation
-
-- **[USAGE.md](USAGE.md)**: Comprehensive usage guide with real-world examples, CI/CD integration, and advanced configuration
-- **[Examples](examples/)**: Sample code demonstrating detected patterns
-- **[Scripts](scripts/)**: Helper scripts for automated analysis and project setup
-
-## Configuration Options
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `-max-alloc-size` | `32` | Maximum bytes to consider "small" allocation |
-| `-disable-patterns` | `""` | Comma-separated list of detectors to skip |
-| `-stackalloc.metrics-enabled` | `false` | Expose Prometheus metrics |
-| `-openai-api-key` | `""` | OpenAI API key for AI suggestions |
-| `-openai-model` | `gpt-4` | OpenAI model to use |
-| `-openai-max-tokens` | `512` | Maximum tokens for OpenAI response |
-| `-openai-temperature` | `0.2` | Temperature for OpenAI requests |
-| `-openai-disable` | `false` | Disable AI-powered suggestions |
-| `-autofix` | `false` | Enable automatic code fixes (use with caution) |
-
-### Environment Variables
-
-- `OPENAI_API_KEY`: OpenAI API key (alternative to `-openai-api-key` flag)
-- `STACKALLOC_USE_DI`: Enable dependency injection mode (`true`/`false`)
-
-## Detection Patterns
-
-### 1. Pointer to Local Variable Escape
-
-Detects when a pointer to a local variable escapes the function scope:
-
-```go
-func bad() *int {
-    x := 42
-    return &x  // ❌ Detected: pointer escapes only once
-}
-
-func good() int {
-    x := 42
-    return x   // ✅ Better: return value directly
-}
+### CI/CD Pipeline
+```yaml
+- name: Run Stack Allocation Analysis
+  run: |
+    go vet -vettool=stackalloc ./...
+    if [ $? -ne 0 ]; then
+      echo "Stack allocation issues found"
+      exit 1
+    fi
 ```
 
-### 2. new(T) Allocations
-
-Identifies `new(T)` calls that could be replaced with stack allocation:
-
-```go
-func bad() *string {
-    s := new(string)  // ❌ Detected: new() always allocates on heap
-    *s = "hello"
-    return s
-}
-
-func good() string {
-    return "hello"    // ✅ Better: return value directly
-}
-```
-
-### 3. Object Reuse Analysis
-
-Avoids false positives by tracking object usage patterns:
-
-```go
-func reused() {
-    data := make([]int, 100)
-    process(data)
-    process(data)     // ✅ Not flagged: object is reused
-    process(data)
-}
-```
-
-## Architecture
-
-`stackalloc` follows a clean 3-layer architecture:
-
-```
-┌─────────────┐    ┌──────────────┐    ┌──────────────┐
-│  CLI / Vet  │ -> │ Analyzer Core│ -> │ Report Engine│ -> Output
-└─────────────┘    └──────────────┘    └──────────────┘
-```
-
-**Key Components:**
-- **Analyzer Core**: AST inspection and pattern detection
-- **AI Integration**: OpenAI adapter for enhanced suggestions
-- **Metrics**: Prometheus integration for monitoring
-- **Extensible**: Plugin architecture for custom detectors
-
-## AI Integration
-
-`stackalloc` integrates with OpenAI to provide **concrete code fixes**, not just enhanced problem descriptions.
-
-### How It Works
-
-1. **Issue Detection**: Detects memory allocation issues using static analysis
-2. **Context Extraction**: Extracts code snippet around the problematic line  
-3. **AI Analysis**: Sends code and issue to OpenAI requesting specific fixes
-4. **Code Generation**: Returns actual replacement code with before/after examples
-5. **Smart Application**: Generates `analysis.SuggestedFix` objects for IDE integration
-
-### Automatic Code Fixes
-
-When `-stackalloc.autofix` is enabled, the analyzer provides concrete code fixes:
-
-**⚠️ Important**: Automatic fixes are experimental. Always review changes before applying.
-
-**Example:**
-```go
-// Before (problematic)
-func createString() *string {
-    s := new(string)  // Heap allocation
-    *s = "hello"
-    return s
-}
-
-// After (AI-suggested fix)
-func createString() string {
-    return "hello"  // Direct value return
-}
-```
-
-## Metrics
-
-When metrics are enabled, the analyzer exposes Prometheus metrics:
-
-- `stackalloc_files_analyzed_total`: Total number of files analyzed
-- `stackalloc_issues_found_total`: Total number of issues found
-- `stackalloc_analysis_duration_seconds`: Time spent analyzing files
-
-Access metrics at `http://localhost:8080/metrics` (when running in server mode).
-
-## Development
-
-### Prerequisites
-
-- Go 1.20 or later
-- Optional: OpenAI API key for AI features
-
-### Building
-
+### Pre-commit Hook
 ```bash
-go build ./cmd
+#!/bin/sh
+go vet -vettool=stackalloc ./...
 ```
 
-### Testing
+## Advanced Features
 
-```bash
-go test ./...
-```
+### Pattern-Specific Analysis
+The tool provides context-aware suggestions based on usage patterns:
 
-### Running on Examples
+- **Hot Path Detection**: Identifies allocations in performance-critical code
+- **Loop Analysis**: Detects allocations inside loops that may cause performance issues
+- **Escape Analysis Integration**: Works with Go's escape analysis for better suggestions
+- **Type-Aware Fixes**: Provides appropriate zero values for different types
 
-```bash
-go vet -vettool=./stackalloc ./examples/
-```
+### AI Integration
+When configured with an OpenAI API key, the tool provides:
+
+- **Context-Aware Suggestions**: AI analyzes code context for better recommendations
+- **Performance Explanations**: Detailed explanations of why changes improve performance
+- **Alternative Implementations**: Multiple optimization strategies for complex cases
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch
+3. Add tests for new allocation patterns
+4. Submit a pull request
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see LICENSE file for details.
 
-## Acknowledgments
+## Changelog
 
-- Built using [golang.org/x/tools/go/analysis](https://pkg.go.dev/golang.org/x/tools/go/analysis)
-- AI integration powered by [OpenAI](https://openai.com/)
-- Metrics provided by [Prometheus](https://prometheus.io/)
-- Dependency injection via [Uber Dig](https://github.com/uber-go/dig)
-- Logging with [Uber Zap](https://github.com/uber-go/zap)
+### v2.0.0 - Enhanced Pattern Detection
+- Added 12 new allocation pattern types
+- Implemented AI-powered autofix capabilities  
+- Enhanced string concatenation detection
+- Added reflection and interface boxing detection
+- Improved closure capture analysis
+- Added comprehensive test suite
 
-## Roadmap
-
-- [ ] Support for more allocation patterns
-- [ ] Integration with other AI providers
-- [ ] Performance optimizations
-- [ ] IDE plugin support
-- [ ] Custom rule definitions
-- [ ] Batch processing mode 
+### v1.0.0 - Initial Release
+- Basic new(T) call detection
+- Simple autofix for primitive types
+- Command-line interface 

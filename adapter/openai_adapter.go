@@ -88,7 +88,7 @@ func (a *OpenAIAdapter) SuggestFix(ctx context.Context, snippet, issueMsg string
 
 // buildPrompt constructs the prompt for OpenAI
 func (a *OpenAIAdapter) buildPrompt(snippet, issueMsg string) string {
-	return fmt.Sprintf(`Analyze this Go code snippet and provide a specific suggestion to fix the memory allocation issue:
+	return fmt.Sprintf(`Analyze this Go code snippet and provide a specific code fix for the memory allocation issue:
 
 Issue: %s
 
@@ -96,9 +96,20 @@ Code:
 %s
 
 Please provide:
-1. A brief explanation of the problem
-2. A specific code change recommendation
-3. Why this change improves memory allocation
+1. A concrete code replacement that fixes the issue
+2. Show the exact "before" and "after" code
+3. Brief explanation of why this change improves memory allocation
 
-Keep the response concise and focused on the specific issue.`, issueMsg, snippet)
+Format your response with clear before/after code blocks:
+Before:
+`+"```go"+`
+// problematic code here
+`+"```"+`
+
+After:
+`+"```go"+`
+// fixed code here
+`+"```"+`
+
+Focus on providing actionable code changes, not just descriptions.`, issueMsg, snippet)
 }

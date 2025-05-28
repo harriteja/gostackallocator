@@ -179,12 +179,12 @@ The analyzer can integrate with OpenAI's API to provide enhanced code suggestion
 
 ### Automatic Code Fixes
 
-When the `-autofix` flag is enabled along with AI integration, the analyzer can automatically generate code fixes:
+When the `-autofix` flag is enabled along with AI integration, the analyzer provides concrete code fixes:
 
-1. **AI Analysis**: OpenAI analyzes the problematic code and suggests improvements
-2. **Code Parsing**: The analyzer parses AI suggestions to extract actionable code changes
-3. **Smart Replacement**: Generates `analysis.SuggestedFix` with actual code replacements
-4. **Safety**: Validates suggested code before applying fixes
+1. **AI Analysis**: OpenAI analyzes the problematic code and suggests specific improvements
+2. **Code Generation**: The analyzer generates actual replacement code based on AI suggestions
+3. **Smart Replacement**: Creates `analysis.SuggestedFix` with precise code changes
+4. **Validation**: Validates suggested code syntax before proposing fixes
 
 **⚠️ Important**: Automatic fixes are experimental. Always review changes before applying them to production code.
 
@@ -195,16 +195,53 @@ example.go:10:2: new(T) always allocates on heap; consider using stack allocatio
     Suggested fix: Replace new(T) with stack allocation
     - s := new(string)
     + var s string; return &s
+
+example.go:15:6: pointer to x escapes only once; consider using stack allocation  
+    Suggested fix: Return value instead of pointer
+    - return &x
+    + return x
 ```
 
 ### AI Suggestion Examples
 
-Example output with AI suggestions:
+Example output with AI suggestions and automatic fixes:
 
 ```
-example.go:10:2: pointer to x escapes only once; consider using stack allocation
-    AI suggestion: Instead of returning &x, consider returning the value directly
-    or using a value receiver pattern to avoid heap allocation.
+example.go:10:2: new(T) always allocates on heap; consider using stack allocation if object doesn't escape
+    AI suggested fix:
+    - s := new(string)
+    + var s string; ptr := &s
+
+example.go:15:6: pointer to x escapes only once; consider using stack allocation
+    AI suggested fix:
+    - return &x
+    + return x  // Return by value instead of pointer
+```
+
+**Before (problematic code):**
+```go
+func createString() *string {
+    s := new(string)  // Heap allocation
+    *s = "hello"
+    return s
+}
+
+func getValue() *int {
+    x := 42
+    return &x  // Pointer escape
+}
+```
+
+**After (AI-suggested fixes):**
+```go
+func createString() string {
+    return "hello"  // Direct value return
+}
+
+func getValue() int {
+    x := 42
+    return x  // Value return, no escape
+}
 ```
 
 ## Metrics

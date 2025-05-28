@@ -14,58 +14,62 @@
 - 🚀 **Fast**: Efficient AST-based analysis with minimal overhead
 - 🔌 **Extensible**: Plugin architecture for custom detectors
 
-## Quick Start
+## 🚀 Quick Start
 
 ### Installation
 
 ```bash
-# Option 1: Install from source
+# Clone the repository
 git clone https://github.com/harriteja/gostackallocator.git
 cd gostackallocator
-go build -o stackalloc ./cmd
 
-# Option 2: Using go install (when published)
-go install github.com/harriteja/gostackallocator/cmd@latest
+# Build the analyzer
+go build -o stackalloc ./cmd/main.go
 ```
 
 ### Basic Usage
 
 ```bash
+# Analyze a single file
+go vet -vettool=./stackalloc ./examples/sample.go
+
 # Analyze entire project
-go vet -vettool=stackalloc ./...
+go vet -vettool=./stackalloc ./...
 
-# Analyze specific package
-go vet -vettool=stackalloc ./internal/handlers/...
+# Enable automatic code fixes (⚠️ modifies source files)
+go vet -vettool=./stackalloc -stackalloc.autofix=true ./examples/
 
-# Analyze single file
-go vet -vettool=stackalloc ./main.go
-
-# With custom threshold (stricter for performance-critical code)
-go vet -vettool=stackalloc -stackalloc.max-alloc-size=16 ./...
+# Customize detection threshold
+go vet -vettool=./stackalloc -stackalloc.max-alloc-size=64 ./...
 ```
 
-### AI-Powered Analysis
+### 🔧 Automatic Code Fixes
 
-```bash
-# Set up OpenAI API key
-export OPENAI_API_KEY="your-api-key"
+The `stackalloc` analyzer can automatically apply AI-suggested fixes to your code:
 
-# Basic AI analysis
-STACKALLOC_USE_DI=true go vet -vettool=stackalloc ./...
-
-# AI with automatic code fixes (experimental)
-STACKALLOC_USE_DI=true go vet -vettool=stackalloc -stackalloc.autofix ./...
+**Before:**
+```go
+func example() {
+    s := new(string)
+    *s = "hello"
+    
+    i := new(int)
+    *i = 42
+}
 ```
 
-### Helper Scripts
-
-```bash
-# Use automated analysis script
-./scripts/analyze-project.sh -b ./stackalloc --ai --autofix
-
-# Quick setup for your project
-./scripts/quick-setup.sh --setup-ide --setup-ci
+**After (with `-stackalloc.autofix=true`):**
+```go
+func example() {
+    s := ""
+    *s = "hello"  // Manual cleanup needed
+    
+    i := 0
+    *i = 42       // Manual cleanup needed
+}
 ```
+
+**⚠️ Important:** Autofix modifies source files directly. Always commit your changes before running with `-autofix=true`.
 
 ## What It Detects
 

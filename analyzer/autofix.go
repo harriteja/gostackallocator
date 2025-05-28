@@ -1,38 +1,143 @@
 package analyzer
 
 import (
+	"fmt"
 	"go/format"
-	"go/parser"
 	"go/token"
-	"regexp"
+	"io/ioutil"
+	"os"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
 
+// FileWriter interface for writing fixes to files
+type FileWriter interface {
+	WriteFile(filename string, data []byte, perm os.FileMode) error
+}
+
+// RealFileWriter implements FileWriter for actual file system operations
+type RealFileWriter struct{}
+
+func (w *RealFileWriter) WriteFile(filename string, data []byte, perm os.FileMode) error {
+	return ioutil.WriteFile(filename, data, perm)
+}
+
 // AutoFixer handles automatic code fixes based on AI suggestions
 type AutoFixer struct {
-	fset *token.FileSet
+	fset   *token.FileSet
+	writer FileWriter
 }
 
 // NewAutoFixer creates a new AutoFixer instance
 func NewAutoFixer(fset *token.FileSet) *AutoFixer {
-	return &AutoFixer{fset: fset}
+	return &AutoFixer{
+		fset:   fset,
+		writer: &RealFileWriter{},
+	}
 }
 
-// GenerateAutoFixes creates automatic code fixes from AI suggestions
-func (af *AutoFixer) GenerateAutoFixes(issue Issue, aiSuggestion string) []analysis.SuggestedFix {
-	var fixes []analysis.SuggestedFix
+// NewAutoFixerWithWriter creates a new AutoFixer instance with custom writer
+func NewAutoFixerWithWriter(fset *token.FileSet, writer FileWriter) *AutoFixer {
+	return &AutoFixer{
+		fset:   fset,
+		writer: writer,
+	}
+}
 
-	// Try different fix strategies based on the issue type
-	if strings.Contains(issue.Message, "new(T)") {
-		if fix := af.fixNewAllocation(issue, aiSuggestion); fix != nil {
-			fixes = append(fixes, *fix)
+// ApplyFixesToFile applies all fixes to a file and writes the result back
+func (af *AutoFixer) ApplyFixesToFile(filename string, fixes []analysis.TextEdit) error {
+	// Read the original file
+	content, err := ioutil.ReadFile(filename)
+	if err != nil {
+		return err
+	}
+
+	// Sort fixes by position (reverse order to apply from end to beginning)
+	sort.Slice(fixes, func(i, j int) bool {
+		return fixes[i].Pos > fixes[j].Pos
+	})
+
+	// Apply each fix
+	result := content
+	for _, fix := range fixes {
+		result, err = af.applyTextEdit(result, fix)
+		if err != nil {
+			return err
 		}
 	}
 
-	if strings.Contains(issue.Message, "pointer to") && strings.Contains(issue.Message, "escapes") {
-		if fix := af.fixEscapingPointer(issue, aiSuggestion); fix != nil {
+	// Format the result
+	formatted, err := format.Source(result)
+	if err != nil {
+		// If formatting fails, use unformatted result
+		formatted = result
+	}
+
+	// Write back to file
+	return af.writer.WriteFile(filename, formatted, 0644)
+}
+
+// applyTextEdit applies a single text edit to the content
+func (af *AutoFixer) applyTextEdit(content []byte, edit analysis.TextEdit) ([]byte, error) {
+	// Convert token positions to byte offsets
+	startOffset := af.tokenPosToByteOffset(content, edit.Pos)
+	endOffset := af.tokenPosToByteOffset(content, edit.End)
+
+	if startOffset < 0 || endOffset < 0 || startOffset > len(content) || endOffset > len(content) {
+		// Invalid positions, skip this edit
+		return content, nil
+	}
+
+	// Apply the edit
+	result := make([]byte, 0, len(content)+len(edit.NewText))
+	result = append(result, content[:startOffset]...)
+	result = append(result, edit.NewText...)
+	result = append(result, content[endOffset:]...)
+
+	return result, nil
+}
+
+// tokenPosToByteOffset converts a token.Pos to byte offset in the content
+func (af *AutoFixer) tokenPosToByteOffset(content []byte, pos token.Pos) int {
+	if pos == token.NoPos {
+		return -1
+	}
+
+	position := af.fset.Position(pos)
+	if position.Filename == "" {
+		return -1
+	}
+
+	// Simple approach: count bytes to reach the line and column
+	lines := strings.Split(string(content), "\n")
+	if position.Line <= 0 || position.Line > len(lines) {
+		return -1
+	}
+
+	offset := 0
+	// Add bytes for all previous lines (including newlines)
+	for i := 0; i < position.Line-1; i++ {
+		offset += len(lines[i]) + 1 // +1 for newline
+	}
+
+	// Add column offset (1-based to 0-based)
+	if position.Column > 0 {
+		offset += position.Column - 1
+	}
+
+	return offset
+}
+
+// GenerateAutoFixes creates suggested fixes based on AI suggestions and issue analysis
+func (af *AutoFixer) GenerateAutoFixes(issue Issue, aiSuggestion string) []analysis.SuggestedFix {
+	var fixes []analysis.SuggestedFix
+
+	// Parse the issue to understand what kind of fix is needed
+	if strings.Contains(issue.Message, "new(T)") {
+		// Try to generate a fix for new(T) allocations
+		if fix := af.generateNewTFix(issue, aiSuggestion); fix != nil {
 			fixes = append(fixes, *fix)
 		}
 	}
@@ -40,112 +145,88 @@ func (af *AutoFixer) GenerateAutoFixes(issue Issue, aiSuggestion string) []analy
 	return fixes
 }
 
-// fixNewAllocation handles fixes for new(T) allocations
-func (af *AutoFixer) fixNewAllocation(issue Issue, aiSuggestion string) *analysis.SuggestedFix {
-	// Extract the type from new(Type) pattern
-	typePattern := regexp.MustCompile(`new\((\w+)\)`)
-
+// generateNewTFix generates a fix for new(T) allocations
+func (af *AutoFixer) generateNewTFix(issue Issue, aiSuggestion string) *analysis.SuggestedFix {
 	// Read the source file to understand the context
-	pos := af.fset.Position(token.Pos(issue.Pos.Offset))
-	if pos.Filename == "" {
+	if issue.Pos.Filename == "" {
 		return nil
 	}
 
-	// Parse AI suggestion for better replacement
-	replacement := af.parseAISuggestionForReplacement(aiSuggestion, "new")
-	if replacement == "" {
-		// Default replacement strategy
-		if matches := typePattern.FindStringSubmatch(issue.Message); len(matches) > 1 {
-			typeName := matches[1]
-			replacement = "var value " + typeName + "; &value"
-		} else {
-			replacement = "/* TODO: Replace new() with stack allocation */"
-		}
-	}
-
-	return &analysis.SuggestedFix{
-		Message: "Replace new(T) with stack allocation",
-		TextEdits: []analysis.TextEdit{
-			{
-				Pos:     token.Pos(issue.Pos.Offset),
-				End:     token.Pos(issue.Pos.Offset + 20), // Approximate range
-				NewText: []byte(replacement),
-			},
-		},
-	}
-}
-
-// fixEscapingPointer handles fixes for escaping pointer issues
-func (af *AutoFixer) fixEscapingPointer(issue Issue, aiSuggestion string) *analysis.SuggestedFix {
-	// Extract variable name from the message
-	varPattern := regexp.MustCompile(`pointer to (\w+) escapes`)
-	matches := varPattern.FindStringSubmatch(issue.Message)
-	if len(matches) < 2 {
+	content, err := ioutil.ReadFile(issue.Pos.Filename)
+	if err != nil {
 		return nil
 	}
 
-	varName := matches[1]
-
-	// Parse AI suggestion for better replacement
-	replacement := af.parseAISuggestionForReplacement(aiSuggestion, "return")
-	if replacement == "" {
-		// Default strategy: suggest returning value instead of pointer
-		replacement = "/* Consider returning " + varName + " by value instead of pointer */"
+	lines := strings.Split(string(content), "\n")
+	if issue.Pos.Line < 1 || issue.Pos.Line > len(lines) {
+		return nil
 	}
 
-	return &analysis.SuggestedFix{
-		Message: "Avoid pointer escape by returning value",
-		TextEdits: []analysis.TextEdit{
-			{
-				Pos:     token.Pos(issue.Pos.Offset),
-				End:     token.Pos(issue.Pos.Offset + 10),
-				NewText: []byte(replacement),
+	line := lines[issue.Pos.Line-1]
+
+	// Look for patterns like "s := new(string)" or "i := new(int)"
+	if strings.Contains(line, ":= new(") {
+		// Find the exact position of "new(Type)" in the line
+		newIndex := strings.Index(line, "new(")
+		if newIndex == -1 {
+			return nil
+		}
+
+		// Find the closing parenthesis
+		closeIndex := strings.Index(line[newIndex:], ")")
+		if closeIndex == -1 {
+			return nil
+		}
+		closeIndex += newIndex + 1 // Adjust for the offset and include the closing paren
+
+		// Extract the type
+		newExpr := line[newIndex:closeIndex]
+		if !strings.HasPrefix(newExpr, "new(") || !strings.HasSuffix(newExpr, ")") {
+			return nil
+		}
+
+		typeName := newExpr[4 : len(newExpr)-1] // Remove "new(" and ")"
+
+		// Generate the replacement value
+		var replacement string
+		switch typeName {
+		case "string":
+			replacement = `""`
+		case "int":
+			replacement = "0"
+		case "bool":
+			replacement = "false"
+		case "float64":
+			replacement = "0.0"
+		default:
+			// For other types, we can't easily provide a zero value without more context
+			// So we'll skip this fix
+			return nil
+		}
+
+		// Calculate the absolute positions in the file
+		lineStart := 0
+		for i := 0; i < issue.Pos.Line-1; i++ {
+			lineStart += len(lines[i]) + 1 // +1 for newline
+		}
+
+		// Position of the new(Type) expression in the file
+		newExprStart := lineStart + newIndex
+		newExprEnd := lineStart + closeIndex
+
+		return &analysis.SuggestedFix{
+			Message: fmt.Sprintf("Replace new(%s) with zero value", typeName),
+			TextEdits: []analysis.TextEdit{
+				{
+					Pos:     token.Pos(newExprStart),
+					End:     token.Pos(newExprEnd),
+					NewText: []byte(replacement),
+				},
 			},
-		},
-	}
-}
-
-// parseAISuggestionForReplacement extracts actionable code from AI suggestions
-func (af *AutoFixer) parseAISuggestionForReplacement(suggestion, context string) string {
-	// Look for code blocks in the AI suggestion
-	codeBlockPattern := regexp.MustCompile("```(?:go)?\n(.*?)\n```")
-	matches := codeBlockPattern.FindAllStringSubmatch(suggestion, -1)
-
-	for _, match := range matches {
-		if len(match) > 1 {
-			code := strings.TrimSpace(match[1])
-			// Validate that this is reasonable Go code
-			if af.isValidGoCode(code) {
-				return code
-			}
 		}
 	}
 
-	// Look for "After:" patterns
-	afterPattern := regexp.MustCompile(`(?i)after:\s*\n(.*?)(?:\n\n|\n//|$)`)
-	if matches := afterPattern.FindStringSubmatch(suggestion); len(matches) > 1 {
-		code := strings.TrimSpace(matches[1])
-		if af.isValidGoCode(code) {
-			return code
-		}
-	}
-
-	// Look for direct suggestions
-	suggestionPattern := regexp.MustCompile(`(?i)(?:replace|use|try):\s*(.*?)(?:\n|$)`)
-	if matches := suggestionPattern.FindStringSubmatch(suggestion); len(matches) > 1 {
-		return strings.TrimSpace(matches[1])
-	}
-
-	return ""
-}
-
-// isValidGoCode performs basic validation of Go code snippets
-func (af *AutoFixer) isValidGoCode(code string) bool {
-	// Wrap in a function to make it parseable
-	wrappedCode := "package main\nfunc test() {\n" + code + "\n}"
-
-	_, err := parser.ParseFile(af.fset, "", wrappedCode, parser.ParseComments)
-	return err == nil
+	return nil
 }
 
 // FormatCode formats Go code using go/format

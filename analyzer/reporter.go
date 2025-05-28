@@ -6,9 +6,83 @@ import (
 	"go/token"
 	"io/ioutil"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/analysis"
 )
+
+// FixTracker tracks fixes to be applied to files
+type FixTracker struct {
+	mu    sync.Mutex
+	fixes map[string][]analysis.TextEdit // filename -> list of fixes
+}
+
+// NewFixTracker creates a new fix tracker
+func NewFixTracker() *FixTracker {
+	return &FixTracker{
+		fixes: make(map[string][]analysis.TextEdit),
+	}
+}
+
+// AddFix adds a fix for a specific file
+func (ft *FixTracker) AddFix(filename string, edits []analysis.TextEdit) {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+
+	// Deduplicate overlapping edits
+	existingEdits := ft.fixes[filename]
+	for _, newEdit := range edits {
+		// Check if this edit overlaps with existing ones
+		overlaps := false
+		for i, existingEdit := range existingEdits {
+			if newEdit.Pos <= existingEdit.End && newEdit.End >= existingEdit.Pos {
+				// Overlapping edit found - replace if the new one is better
+				if len(newEdit.NewText) > 0 && !strings.Contains(string(newEdit.NewText), "TODO") {
+					existingEdits[i] = newEdit
+				}
+				overlaps = true
+				break
+			}
+		}
+
+		// If no overlap, add the new edit
+		if !overlaps {
+			existingEdits = append(existingEdits, newEdit)
+		}
+	}
+
+	ft.fixes[filename] = existingEdits
+}
+
+// ApplyAllFixes applies all tracked fixes using the provided AutoFixer
+func (ft *FixTracker) ApplyAllFixes(autoFixer *AutoFixer) error {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+
+	for filename, edits := range ft.fixes {
+		if len(edits) > 0 {
+			err := autoFixer.ApplyFixesToFile(filename, edits)
+			if err != nil {
+				return fmt.Errorf("failed to apply fixes to %s: %v", filename, err)
+			}
+		}
+	}
+	return nil
+}
+
+// GetFilesWithFixes returns a list of files that have fixes
+func (ft *FixTracker) GetFilesWithFixes() []string {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+
+	var files []string
+	for filename, edits := range ft.fixes {
+		if len(edits) > 0 {
+			files = append(files, filename)
+		}
+	}
+	return files
+}
 
 // FormatIssue converts an Issue into an analysis.Diagnostic
 func FormatIssue(issue Issue, aiClient AIClient, fset *token.FileSet, config *Config) analysis.Diagnostic {
@@ -19,7 +93,7 @@ func FormatIssue(issue Issue, aiClient AIClient, fset *token.FileSet, config *Co
 	}
 
 	// Add AI-powered suggestion if enabled
-	if !config.OpenAIDisable && aiClient != nil && config.OpenAIAPIKey != "" {
+	if !config.OpenAIDisable && aiClient != nil {
 		if suggestion := getAISuggestion(issue, aiClient, fset, config); suggestion != "" {
 			// Generate automatic fixes if enabled
 			if config.AutoFix {
@@ -55,6 +129,26 @@ func FormatIssue(issue Issue, aiClient AIClient, fset *token.FileSet, config *Co
 					},
 				}
 			}
+		}
+	}
+
+	return diagnostic
+}
+
+// FormatIssueWithFixTracker converts an Issue into an analysis.Diagnostic and tracks fixes
+func FormatIssueWithFixTracker(issue Issue, aiClient AIClient, fset *token.FileSet, config *Config, fixTracker *FixTracker) analysis.Diagnostic {
+	diagnostic := FormatIssue(issue, aiClient, fset, config)
+
+	// If autofix is enabled and we have suggested fixes, track them for later application
+	if config.AutoFix && len(diagnostic.SuggestedFixes) > 0 {
+		position := fset.Position(token.Pos(issue.Pos.Offset))
+		if position.Filename != "" {
+			// Collect all text edits from all suggested fixes
+			var allEdits []analysis.TextEdit
+			for _, fix := range diagnostic.SuggestedFixes {
+				allEdits = append(allEdits, fix.TextEdits...)
+			}
+			fixTracker.AddFix(position.Filename, allEdits)
 		}
 	}
 
@@ -149,5 +243,11 @@ func generateCodeFixes(issue Issue, suggestion string, fset *token.FileSet) []an
 // ReportIssue is a helper function to report an issue with proper formatting
 func ReportIssue(pass *analysis.Pass, issue Issue, aiClient AIClient, config *Config) {
 	diagnostic := FormatIssue(issue, aiClient, pass.Fset, config)
+	pass.Report(diagnostic)
+}
+
+// ReportIssueWithAutoFix reports an issue and applies fixes automatically if enabled
+func ReportIssueWithAutoFix(pass *analysis.Pass, issue Issue, aiClient AIClient, config *Config, fixTracker *FixTracker) {
+	diagnostic := FormatIssueWithFixTracker(issue, aiClient, pass.Fset, config, fixTracker)
 	pass.Report(diagnostic)
 }

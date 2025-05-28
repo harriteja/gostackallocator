@@ -1,11 +1,14 @@
 package analyzer
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strconv"
+	"strings"
 	"time"
 
 	"golang.org/x/tools/go/analysis"
@@ -17,6 +20,20 @@ type NoOpMetricsAdapter struct{}
 func (n *NoOpMetricsAdapter) IncrementFilesAnalyzed()                 {}
 func (n *NoOpMetricsAdapter) IncrementIssuesFound()                   {}
 func (n *NoOpMetricsAdapter) RecordAnalysisDuration(duration float64) {}
+
+// MockAIClient is a simple mock implementation for testing
+type MockAIClient struct{}
+
+func (m *MockAIClient) SuggestFix(ctx context.Context, snippet, issueMsg string) (string, error) {
+	// Provide simple mock suggestions based on the issue message
+	if strings.Contains(issueMsg, "new(T)") {
+		return "Replace with stack allocation: var value T; &value", nil
+	}
+	if strings.Contains(issueMsg, "pointer") && strings.Contains(issueMsg, "escapes") {
+		return "Return value instead of pointer", nil
+	}
+	return "Consider optimizing this allocation", nil
+}
 
 // Analyzer is the main static analysis analyzer for stack allocation detection
 var Analyzer = &analysis.Analyzer{
@@ -54,19 +71,46 @@ func NewAnalyzer(aiClient AIClient, metricsClient MetricsClient, config *Config)
 func run(pass *analysis.Pass) (interface{}, error) {
 	// Create config from flags
 	config := DefaultConfig()
+
+	// Manually check flag values
+	if autofixFlag := pass.Analyzer.Flags.Lookup("autofix"); autofixFlag != nil {
+		if val, err := strconv.ParseBool(autofixFlag.Value.String()); err == nil {
+			config.AutoFix = val
+		}
+	}
+
 	config.ParseFlags(&pass.Analyzer.Flags)
 
 	// Create metrics client (no-op for now)
 	metricsClient := &NoOpMetricsAdapter{}
 
-	// Create AI client if enabled (simplified for now)
+	// Create AI client if enabled (use mock for testing)
 	var aiClient AIClient
+	if config.AutoFix {
+		// Use mock AI client for testing when no real API key is provided
+		if config.OpenAIAPIKey == "" {
+			aiClient = &MockAIClient{}
+		}
+		// Real AI client would be created here if API key is provided
+	}
+
+	// Create fix tracker for automatic fixes
+	fixTracker := NewFixTracker()
 
 	// Track analysis start time
 	startTime := time.Now()
 	defer func() {
 		duration := time.Since(startTime).Seconds()
 		metricsClient.RecordAnalysisDuration(duration)
+
+		// Apply fixes if autofix is enabled
+		if config.AutoFix && len(fixTracker.GetFilesWithFixes()) > 0 {
+			autoFixer := NewAutoFixer(pass.Fset)
+			if err := fixTracker.ApplyAllFixes(autoFixer); err != nil {
+				// Log error but don't fail the analysis
+				pass.Reportf(token.NoPos, "Failed to apply automatic fixes: %v", err)
+			}
+		}
 	}()
 
 	// Analyze each file
@@ -83,8 +127,8 @@ func run(pass *analysis.Pass) (interface{}, error) {
 				Message: msg,
 			}
 
-			// Report issue
-			ReportIssue(pass, issue, aiClient, config)
+			// Report issue with autofix support
+			ReportIssueWithAutoFix(pass, issue, aiClient, config, fixTracker)
 		})
 	}
 
@@ -101,12 +145,24 @@ func runWithDeps(pass *analysis.Pass, aiClient AIClient, metricsClient MetricsCl
 
 	startTime := time.Now()
 
+	// Create fix tracker for automatic fixes
+	fixTracker := NewFixTracker()
+
 	// Increment files analyzed metric
 	if metricsClient != nil {
 		metricsClient.IncrementFilesAnalyzed()
 		defer func() {
 			duration := time.Since(startTime).Seconds()
 			metricsClient.RecordAnalysisDuration(duration)
+
+			// Apply fixes if autofix is enabled
+			if config.AutoFix && len(fixTracker.GetFilesWithFixes()) > 0 {
+				autoFixer := NewAutoFixer(pass.Fset)
+				if err := fixTracker.ApplyAllFixes(autoFixer); err != nil {
+					// Log error but don't fail the analysis
+					pass.Reportf(token.NoPos, "Failed to apply automatic fixes: %v", err)
+				}
+			}
 		}()
 	}
 
@@ -117,7 +173,7 @@ func runWithDeps(pass *analysis.Pass, aiClient AIClient, metricsClient MetricsCl
 		issues := analyzeFile(file, pass.TypesInfo, pass.Fset, config)
 
 		for _, issue := range issues {
-			ReportIssue(pass, issue, aiClient, config)
+			ReportIssueWithAutoFix(pass, issue, aiClient, config, fixTracker)
 			issuesFound++
 		}
 	}

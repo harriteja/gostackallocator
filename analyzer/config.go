@@ -75,6 +75,30 @@ func (c *Config) ParseFlags(fs *flag.FlagSet) {
 			if temp, err := strconv.ParseFloat(f.Value.String(), 32); err == nil {
 				c.OpenAITemperature = float32(temp)
 			}
+		case "autofix":
+			if val, err := strconv.ParseBool(f.Value.String()); err == nil {
+				c.AutoFix = val
+			}
+		case "max-alloc-size":
+			if val, err := strconv.Atoi(f.Value.String()); err == nil {
+				c.MaxAllocSize = val
+			}
+		case "metrics-enabled":
+			if val, err := strconv.ParseBool(f.Value.String()); err == nil {
+				c.MetricsEnabled = val
+			}
+		case "openai-api-key":
+			c.OpenAIAPIKey = f.Value.String()
+		case "openai-model":
+			c.OpenAIModel = f.Value.String()
+		case "openai-max-tokens":
+			if val, err := strconv.Atoi(f.Value.String()); err == nil {
+				c.OpenAIMaxTokens = val
+			}
+		case "openai-disable":
+			if val, err := strconv.ParseBool(f.Value.String()); err == nil {
+				c.OpenAIDisable = val
+			}
 		}
 	})
 

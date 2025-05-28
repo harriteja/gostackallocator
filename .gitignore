@@ -17,14 +17,6 @@
 # Go workspace file
 go.work
 
-# Build artifacts
-stackalloc
-/stackalloc
-
-# Analysis reports
-stackalloc-reports/
-*.txt
-
 # IDE files
 .vscode/
 .idea/
@@ -41,10 +33,32 @@ stackalloc-reports/
 ehthumbs.db
 Thumbs.db
 
+# Log files
+*.log
+
 # Temporary files
 *.tmp
 *.temp
-*.log
+
+# Build artifacts
+/dist/
+/build/
+
+# Coverage reports
+coverage.out
+coverage.html
+
+# Stackalloc specific
+stackalloc
+stackalloc.exe
+stackalloc-reports/
+*.report
+reports/
+
+# Development and testing files
+AUTOFIX_SUMMARY.md
+dev-notes.md
+TODO.md
 
 # Environment files
 .env
